@@ -24,15 +24,13 @@ const packages = [
 // typing_extensions, etc.) do NOT need to be listed here.
 const pypiPackages = ['black', 'pathspec', 'mypy_extensions', 'pytokens'];
 
-import { loadPyodide } from 'pyodide';
-import { setGlobalDispatcher, ProxyAgent } from 'undici';
 import { writeFile, readFile, copyFile, readdir, rmdir, access } from 'fs/promises';
 
 /**
  * Loading network proxy configurations from the environment variables.
  * And the proxy config with lowercase name has the highest priority to use.
  */
-function initNetworkProxyFromEnv() {
+async function initNetworkProxyFromEnv() {
 	// we assume all subsequent requests in this script are HTTPS:
 	// https://cdn.jsdelivr.net
 	// https://pypi.org
@@ -51,11 +49,16 @@ function initNetworkProxyFromEnv() {
 		preferedProxyURL = new URL(preferedProxy).toString();
 	} catch {
 		console.warn(`Invalid network proxy URL: "${preferedProxy}"`);
-		return;
+		return false;
 	}
-	const dispatcher = new ProxyAgent({ uri: preferedProxyURL });
-	setGlobalDispatcher(dispatcher);
-	console.log(`Initialized network proxy "${preferedProxy}" from env`);
+	try {
+		const { setGlobalDispatcher, ProxyAgent } = await import('undici');
+		const dispatcher = new ProxyAgent({ uri: preferedProxyURL });
+		setGlobalDispatcher(dispatcher);
+		console.log(`Initialized network proxy "${preferedProxy}" from env`);
+	} catch (err) {
+		console.warn('Undici package is unavailable, skipping proxy initialization.', err);
+	}
 }
 
 async function downloadPackages() {
@@ -63,12 +66,13 @@ async function downloadPackages() {
 
 	let pyodide;
 	try {
+		const { loadPyodide } = await import('pyodide');
 		pyodide = await loadPyodide({
 			packageCacheDir: 'static/pyodide'
 		});
 	} catch (err) {
-		console.error('Failed to load Pyodide:', err);
-		return;
+		console.warn('Pyodide package is unavailable, skipping Pyodide package preparation.', err);
+		return false;
 	}
 
 	const packageJson = JSON.parse(await readFile('package.json'));
@@ -100,7 +104,7 @@ async function downloadPackages() {
 			}
 		} catch (err) {
 			console.error('Package installation failed:', err);
-			return;
+			return false;
 		}
 
 		console.log('Pyodide packages downloaded, freezing into lock file');
@@ -113,7 +117,10 @@ async function downloadPackages() {
 		}
 	} catch (err) {
 		console.error('Failed to load or install micropip:', err);
+		return false;
 	}
+
+	return true;
 }
 
 async function copyPyodide() {
@@ -195,7 +202,9 @@ async function downloadPyPIWheels() {
 	console.log('Updated pyodide-lock.json with PyPI packages');
 }
 
-initNetworkProxyFromEnv();
-await downloadPackages();
-await copyPyodide();
-await downloadPyPIWheels();
+await initNetworkProxyFromEnv();
+const pyodidePrepared = await downloadPackages();
+if (pyodidePrepared) {
+	await copyPyodide();
+	await downloadPyPIWheels();
+}
